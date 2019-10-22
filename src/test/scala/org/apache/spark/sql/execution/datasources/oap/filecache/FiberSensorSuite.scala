@@ -17,11 +17,16 @@
 
 package org.apache.spark.sql.execution.datasources.oap.filecache
 
+import java.util.concurrent.ConcurrentHashMap
+import java.util.function
+
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
+import org.mockito.ArgumentMatchers.any
+import org.mockito.Mockito
 import org.scalatest.BeforeAndAfterEach
 
 import org.apache.spark.SparkConf
@@ -33,7 +38,7 @@ import org.apache.spark.sql.oap.OapRuntime
 import org.apache.spark.sql.oap.listener.{OapListener, SparkListenerCustomInfoUpdate}
 import org.apache.spark.sql.test.oap.{SharedOapContext, TestIndex}
 import org.apache.spark.util.Utils
-import org.apache.spark.util.collection.BitSet
+import org.apache.spark.util.collection.OapBitSet
 
 class FiberSensorSuite extends QueryTest with SharedOapContext with BeforeAndAfterEach {
 
@@ -116,8 +121,8 @@ class FiberSensorSuite extends QueryTest with SharedOapContext with BeforeAndAft
       val summary2 = getCacheStats(fiberSensor)
       logWarning(s"Summary2: ${summary2.toDebugString}")
       assertResult(1)(fiberSensor.executorToCacheManager.size())
-      assert(summary.hitCount < summary2.hitCount)
-      assertResult(summary.missCount)(summary2.missCount)
+      assert(summary.dataFiberHitCount < summary2.dataFiberHitCount)
+      assertResult(summary.dataFiberMissCount)(summary2.dataFiberMissCount)
       assertResult(summary.dataFiberCount)(summary2.dataFiberCount)
       assertResult(summary.dataFiberSize)(summary2.dataFiberSize)
       assertResult(summary.indexFiberCount)(summary2.indexFiberCount)
@@ -142,7 +147,7 @@ class FiberSensorSuite extends QueryTest with SharedOapContext with BeforeAndAft
     CacheStats.reset
     val conf: SparkConf = new SparkConf()
     conf.set(OapConf.OAP_UPDATE_FIBER_CACHE_METRICS_INTERVAL_SEC.key, 0L.toString)
-    val cacheStats = CacheStats(2, 19, 10, 2, 0, 0, 213, 23, 23, 123131, 2)
+    val cacheStats = CacheStats(2, 19, 10, 2, 0, 0, 213, 23, 23, 123131, 2, 3, 23, 11, 22, 33)
     listener.onOtherEvent(SparkListenerCustomInfoUpdate(
       host, execID, messager, CacheStats.status(cacheStats, conf)))
     assertResult(1)(fiberSensor.executorToCacheManager.size())
@@ -166,7 +171,7 @@ class FiberSensorSuite extends QueryTest with SharedOapContext with BeforeAndAft
       // executor1 update
       val host1 = "host1"
       val execId1 = "executor1"
-      val bitSet1 = new BitSet(90)
+      val bitSet1 = new OapBitSet(90)
       bitSet1.set(1)
       bitSet1.set(2)
       val fcs = Seq(FiberCacheStatus(filePath, bitSet1, groupCount, fieldCount))
@@ -178,7 +183,7 @@ class FiberSensorSuite extends QueryTest with SharedOapContext with BeforeAndAft
       // executor2 update
       val host2 = "host2"
       val execId2 = "executor2"
-      val bitSet2 = new BitSet(90)
+      val bitSet2 = new OapBitSet(90)
       bitSet2.set(3)
       bitSet2.set(4)
       bitSet2.set(5)
@@ -197,7 +202,7 @@ class FiberSensorSuite extends QueryTest with SharedOapContext with BeforeAndAft
       val filePath2 = "file2"
       val host3 = "host3"
       val execId3 = "executor2"
-      val bitSet3 = new BitSet(90)
+      val bitSet3 = new OapBitSet(90)
       bitSet3.set(7)
       bitSet3.set(8)
       bitSet3.set(9)
@@ -210,7 +215,7 @@ class FiberSensorSuite extends QueryTest with SharedOapContext with BeforeAndAft
       assert(checkExistence(host1, execId1, getAns(filePath)(1)))
 
       // New info for filePath host2:executor2, less cached may because of eviction
-      val bitSet4 = new BitSet(90)
+      val bitSet4 = new OapBitSet(90)
       bitSet4.set(1)
 
       val fiberInfo4 = SparkListenerCustomInfoUpdate(host2, execId2,
@@ -223,7 +228,7 @@ class FiberSensorSuite extends QueryTest with SharedOapContext with BeforeAndAft
 
       // New info for filePath, host1: execId2, Driver maintaining 3 records for it, while
       // NUM_GET_HOSTS returned
-      val bitSet5 = new BitSet(90)
+      val bitSet5 = new OapBitSet(90)
       bitSet5.set(1)
 
       val fiberInfo5 = SparkListenerCustomInfoUpdate(host1, execId2,
@@ -242,7 +247,7 @@ class FiberSensorSuite extends QueryTest with SharedOapContext with BeforeAndAft
 
     val host = "host"
     val execId = "executor"
-    val bitSet = new BitSet(90)
+    val bitSet = new OapBitSet(90)
 
     (0 until FiberSensor.MAX_HOSTS_MAINTAINED + 1).foreach { i =>
       // The host on the next have more Fibers than this one
@@ -265,5 +270,20 @@ class FiberSensorSuite extends QueryTest with SharedOapContext with BeforeAndAft
 
     fiberSensor.discardOutdatedInfo(host)
     assert(fiberSensor.fileToHosts.get(host) == null)
+  }
+
+  test("OAP-1023 test getHosts threadsafe case") {
+    val testHostName = "test_host"
+    val mockFileToHosts =
+      Mockito.mock(classOf[ConcurrentHashMap[String, ArrayBuffer[HostFiberCache]]])
+    val tmpHosts = ArrayBuffer(HostFiberCache(testHostName, null))
+
+    Mockito.when(mockFileToHosts.contains(any(classOf[String]))).thenReturn(true)
+    Mockito.when(mockFileToHosts.get(any(classOf[String]))).thenReturn(null)
+    Mockito.when(mockFileToHosts.computeIfAbsent(any(classOf[String]),
+      any(classOf[function.Function[String, ArrayBuffer[HostFiberCache]]]))).thenReturn(tmpHosts)
+    val tmpFiberSensor = new FiberSensor(mockFileToHosts)
+    val retHosts = tmpFiberSensor.getHosts("test_file")
+    assert(retHosts.size == 1 && retHosts.head.equals(testHostName))
   }
 }

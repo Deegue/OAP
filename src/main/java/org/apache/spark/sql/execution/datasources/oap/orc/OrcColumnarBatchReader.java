@@ -22,9 +22,6 @@ import java.io.IOException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.mapreduce.InputSplit;
-import org.apache.hadoop.mapreduce.RecordReader;
-import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.orc.OrcConf;
 import org.apache.orc.OrcFile;
 import org.apache.orc.Reader;
@@ -36,13 +33,15 @@ import org.apache.orc.storage.serde2.io.HiveDecimalWritable;
 
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.sql.catalyst.InternalRow;
-import org.apache.spark.sql.vectorized.oap.orc.ColumnVectorUtils;
-import org.apache.spark.sql.vectorized.oap.orc.OffHeapColumnVector;
-import org.apache.spark.sql.vectorized.oap.orc.OnHeapColumnVector;
-import org.apache.spark.sql.vectorized.oap.orc.WritableColumnVector;
+import org.apache.spark.sql.execution.datasources.RecordReader;
+import org.apache.spark.sql.execution.datasources.orc.OrcColumnVector;
+import org.apache.spark.sql.execution.datasources.orc.OrcColumnVectorAllocator;
+import org.apache.spark.sql.execution.vectorized.ColumnVectorUtils;
+import org.apache.spark.sql.execution.vectorized.OffHeapColumnVector;
+import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
+import org.apache.spark.sql.execution.vectorized.WritableColumnVector;
 import org.apache.spark.sql.types.*;
-import org.apache.spark.sql.vectorized.oap.orc.ColumnarBatch;
-
+import org.apache.spark.sql.vectorized.ColumnarBatch;
 
 /**
  * This class is a copy of OrcColumnarBatchReader with minor changes to be able to
@@ -54,7 +53,7 @@ import org.apache.spark.sql.vectorized.oap.orc.ColumnarBatch;
  * To support vectorization in WholeStageCodeGen, this reader returns ColumnarBatch.
  * After creating, `initialize` and `initBatch` should be called sequentially.
  */
-public class OrcColumnarBatchReader extends RecordReader<Void, ColumnarBatch> {
+public class OrcColumnarBatchReader implements RecordReader<ColumnarBatch> {
   // TODO: make this configurable.
   private static final int CAPACITY = 4 * 1024;
 
@@ -79,7 +78,7 @@ public class OrcColumnarBatchReader extends RecordReader<Void, ColumnarBatch> {
   protected WritableColumnVector[] columnVectors;
 
   // The wrapped ORC column vectors. It should be null if `copyToSpark` is true.
-  protected org.apache.spark.sql.vectorized.oap.orc.ColumnVector[] orcVectorWrappers;
+  protected org.apache.spark.sql.vectorized.ColumnVector[] orcVectorWrappers;
 
   // The memory mode of the columnarBatch
   protected final MemoryMode MEMORY_MODE;
@@ -92,20 +91,9 @@ public class OrcColumnarBatchReader extends RecordReader<Void, ColumnarBatch> {
     this.copyToSpark = copyToSpark;
   }
 
-
-  @Override
-  public Void getCurrentKey() {
-    return null;
-  }
-
   @Override
   public ColumnarBatch getCurrentValue() {
     return columnarBatch;
-  }
-
-  @Override
-  public float getProgress() throws IOException {
-    return recordReader.getProgress();
   }
 
   @Override
@@ -126,7 +114,7 @@ public class OrcColumnarBatchReader extends RecordReader<Void, ColumnarBatch> {
   }
 
   @Override
-  public void initialize(InputSplit inputSplit, TaskAttemptContext taskAttemptContext) {
+  public void initialize() throws IOException, InterruptedException {
     // nothing required
   }
 
@@ -198,7 +186,7 @@ public class OrcColumnarBatchReader extends RecordReader<Void, ColumnarBatch> {
     } else {
       // Just wrap the ORC column vector instead of copying it to Spark column vector.
       orcVectorWrappers =
-        new org.apache.spark.sql.vectorized.oap.orc.ColumnVector[resultSchema.length()];
+        new org.apache.spark.sql.vectorized.ColumnVector[resultSchema.length()];
 
       for (int i = 0; i < requiredFields.length; i++) {
         DataType dt = requiredFields[i].dataType();
@@ -210,7 +198,7 @@ public class OrcColumnarBatchReader extends RecordReader<Void, ColumnarBatch> {
           missingCol.setIsConstant();
           orcVectorWrappers[i] = missingCol;
         } else {
-          orcVectorWrappers[i] = new OrcColumnVector(dt, batch.cols[colId]);
+          orcVectorWrappers[i] = OrcColumnVectorAllocator.allocate(dt, batch.cols[colId]);
         }
       }
 

@@ -16,8 +16,6 @@
  */
 package org.apache.parquet.hadoop;
 
-import static org.apache.parquet.hadoop.ParquetInputFormat.getFilter;
-
 import java.io.IOException;
 import java.util.Map;
 
@@ -25,12 +23,14 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.parquet.hadoop.api.InitContext;
 import org.apache.parquet.hadoop.api.ReadSupport;
-import org.apache.parquet.hadoop.api.RecordReader;
 import org.apache.parquet.hadoop.metadata.BlockMetaData;
 import org.apache.parquet.hadoop.metadata.ParquetMetadata;
 import org.apache.parquet.hadoop.utils.Collections3;
 import org.apache.parquet.schema.MessageType;
 
+import static org.apache.parquet.hadoop.ParquetInputFormat.getFilter;
+
+import org.apache.spark.sql.execution.datasources.RecordReader;
 import org.apache.spark.sql.execution.datasources.parquet.ParquetReadSupportWrapper;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.types.StructType$;
